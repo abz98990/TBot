@@ -98,7 +98,7 @@ def run_cli():
 
             # 3. The Prediction Dashboard
             print(f"\n" + "=" * 60)
-            print(f" 🤖 AI PREDICTION REPORT: {coin} ".center(60, "="))
+            print(f"AI PREDICTION REPORT: {coin} ".center(60, "="))
             print(f"=" * 60)
             print(f"Current Rate ({t_now_str})   : ${current_price:.4f}")
             print(f"Target Rate  ({t_target_str})   : ${predicted_target_price:.4f}")
@@ -109,7 +109,7 @@ def run_cli():
             if predicted_pct > 0.1 or predicted_pct < -0.1:
                 signal_direction = 'BUY' if predicted_pct > 0.1 else 'SELL'
 
-                print(f"\n🚨 ACTIONABLE SIGNAL DETECTED: {signal_direction} 🚨")
+                print(f"\nACTIONABLE SIGNAL DETECTED: {signal_direction}")
 
                 auth = input(
                     f"[AUTHORIZATION REQUIRED] Execute {signal_direction} order at ${current_price:.2f}? (y/n): ").strip().lower()
