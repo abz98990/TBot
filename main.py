@@ -1,10 +1,10 @@
-# main.py
-import getpass
 import sys
+from datetime import datetime, timedelta
 import numpy as np
 from module_1_data import DataStreamer
 from module_2_features import FeatureEngineer  # NEW: Importing Module 2
 from module_3_model import ModelEngine
+from module_4_execution import ExecutionManager
 
 
 def run_cli():
@@ -23,20 +23,25 @@ def run_cli():
 
     # 2. Coin Selection
     print("\n--- Strategy Parameters ---")
-    coins_input = input("Enter coins to trade (comma separated, max 5): ")
+    coins_input = "BTC/USDT"
     selected_coins = [coin.strip().upper() for coin in coins_input.split(',')]
-    timeframe = input("Enter timeframe (e.g., 15m, 1h, 1d) [Default: 1h]: ").strip() or "1h"
+    timeframe = "30m"
 
     # Fix common formatting error gracefully
     if timeframe.isnumeric():
         timeframe += 'm'
+
+    # ... [Skip down to where the system initializes] ...
 
     # 3. System Initialization
     print("\n[SYSTEM] Initializing Core Architecture...")
     try:
         # Initialize Modules
         streamer = DataStreamer(api_key, api_secret, testnet=True)
-        engineer = FeatureEngineer(window_size=60)  # Looking back 60 candles
+        engineer = FeatureEngineer(window_size=60)
+
+        # --- NEW: Initialize the Execution Router ---
+        executor = ExecutionManager(streamer.exchange)
 
         # Fetch Data
         print(f"\n[SYSTEM] Commencing Data Ingestion for {timeframe} timeframe...")
@@ -46,47 +51,80 @@ def run_cli():
             limit=500
         )
 
-        # 4. Feature Engineering Pipeline (NEW)
-        # 4. Feature Engineering Pipeline
         for coin, df in historical_data.items():
             print(f"\n--- Processing Pipeline for {coin} ---")
 
-            # Run the synthesis pipeline
             df_features = engineer.apply_technical_indicators(df)
             df_targets = engineer.engineer_target_variable(df_features)
             df_normalized = engineer.normalize_data(df_targets, is_training=True)
 
-            # Generate the final LSTM inputs
             X, y = engineer.create_3d_tensor(df_normalized)
 
-            # Initialize the Brain
             ai_engine = ModelEngine(input_size=3)
-
-            # Train the bot!
-            ai_engine.train(X, y, epochs=15, batch_size=16)
+            ai_engine.train(X, y, epochs=300, batch_size=32)
 
             # --- LIVE PREDICTION ---
-            # Grab the very last 60-candle window from our dataset
             latest_window = X[-1]
-
             print("\n[INFERENCE] Asking AI for next candle prediction...")
             predicted_return = ai_engine.predict_next_candle(latest_window)
 
-            # Convert the log return back to a readable percentage
+            # 1. Price Math Translations
             predicted_pct = (np.exp(predicted_return) - 1) * 100
+            current_price = df['close'].iloc[-1]
+            predicted_target_price = current_price * np.exp(predicted_return)
 
-            print(f"[SIGNAL] Predicted move for {coin}: {predicted_pct:.4f}%")
+            # 2. Time Math Translations
+            # Extract the number and the unit from the timeframe string (e.g., "15" and "m")
+            tf_val = int(timeframe[:-1])
+            tf_unit = timeframe[-1].lower()
 
-            if predicted_pct > 0.1:
-                print(f"[ACTION] AI suggests BUYING {coin}.")
-            elif predicted_pct < -0.1:
-                print(f"[ACTION] AI suggests SELLING {coin}.")
+            if tf_unit == 'm':
+                delta = timedelta(minutes=tf_val)
+            elif tf_unit == 'h':
+                delta = timedelta(hours=tf_val)
+            elif tf_unit == 'd':
+                delta = timedelta(days=tf_val)
             else:
-                print(f"[ACTION] Market is flat. HOLD.")
-        # ... rest of file ...
+                delta = timedelta(hours=1)  # Fallback
+
+            # Calculate actual clock times
+            current_time = datetime.now()
+            target_time = current_time + delta
+
+            # Format times to be easily readable (HH:MM:SS)
+            time_fmt = "%H:%M:%S"
+            t_now_str = current_time.strftime(time_fmt)
+            t_target_str = target_time.strftime(time_fmt)
+
+            # 3. The Prediction Dashboard
+            print(f"\n" + "=" * 60)
+            print(f" 🤖 AI PREDICTION REPORT: {coin} ".center(60, "="))
+            print(f"=" * 60)
+            print(f"Current Rate ({t_now_str})   : ${current_price:.4f}")
+            print(f"Target Rate  ({t_target_str})   : ${predicted_target_price:.4f}")
+            print(f"Expected Move                : {predicted_pct:+.4f}%")
+            print(f"=" * 60)
+
+            # --- THE FINAL HANDOFF TO MODULE 5 (HUMAN-IN-THE-LOOP) ---
+            if predicted_pct > 0.1 or predicted_pct < -0.1:
+                signal_direction = 'BUY' if predicted_pct > 0.1 else 'SELL'
+
+                print(f"\n🚨 ACTIONABLE SIGNAL DETECTED: {signal_direction} 🚨")
+
+                auth = input(
+                    f"[AUTHORIZATION REQUIRED] Execute {signal_direction} order at ${current_price:.2f}? (y/n): ").strip().lower()
+
+                if auth == 'y':
+                    print("\n[SYSTEM] Authorization accepted. Engaging Execution Router...")
+                    executor.process_signal(coin, signal_direction, current_price)
+                else:
+                    print("\n[SYSTEM] Authorization denied. Trade aborted. Standing down.")
+
+            else:
+                print(f"\n[ACTION] Market is flat (Move < 0.1%). HOLD. No execution required.")
+
     except Exception as e:
         print(f"\n[FATAL] System execution failed: {e}")
-
 
 if __name__ == "__main__":
     try:
