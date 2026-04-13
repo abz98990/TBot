@@ -1,6 +1,7 @@
 # main.py
 import getpass
 import sys
+import numpy as np
 from module_1_data import DataStreamer
 from module_2_features import FeatureEngineer  # NEW: Importing Module 2
 from module_3_model import ModelEngine
@@ -46,6 +47,7 @@ def run_cli():
         )
 
         # 4. Feature Engineering Pipeline (NEW)
+        # 4. Feature Engineering Pipeline
         for coin, df in historical_data.items():
             print(f"\n--- Processing Pipeline for {coin} ---")
 
@@ -57,18 +59,30 @@ def run_cli():
             # Generate the final LSTM inputs
             X, y = engineer.create_3d_tensor(df_normalized)
 
-            # ... inside the historical_data loop ...
-
-            # Generate the final LSTM inputs
-            X, y = engineer.create_3d_tensor(df_normalized)
-
-            # --- NEW CODE: MODULE 3 INTEGRATION ---
-            # Initialize the Brain (input_size=3 because we have 3 features)
+            # Initialize the Brain
             ai_engine = ModelEngine(input_size=3)
 
             # Train the bot!
             ai_engine.train(X, y, epochs=15, batch_size=16)
 
+            # --- LIVE PREDICTION ---
+            # Grab the very last 60-candle window from our dataset
+            latest_window = X[-1]
+
+            print("\n[INFERENCE] Asking AI for next candle prediction...")
+            predicted_return = ai_engine.predict_next_candle(latest_window)
+
+            # Convert the log return back to a readable percentage
+            predicted_pct = (np.exp(predicted_return) - 1) * 100
+
+            print(f"[SIGNAL] Predicted move for {coin}: {predicted_pct:.4f}%")
+
+            if predicted_pct > 0.1:
+                print(f"[ACTION] AI suggests BUYING {coin}.")
+            elif predicted_pct < -0.1:
+                print(f"[ACTION] AI suggests SELLING {coin}.")
+            else:
+                print(f"[ACTION] Market is flat. HOLD.")
         # ... rest of file ...
     except Exception as e:
         print(f"\n[FATAL] System execution failed: {e}")

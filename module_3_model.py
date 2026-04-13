@@ -83,3 +83,18 @@ class ModelEngine:
             print(f"   Epoch {epoch + 1:02d}/{epochs} | MSE Loss: {avg_loss:.6f}")
 
         print("[SUCCESS] Neural Network Training Complete.")
+
+    def predict_next_candle(self, recent_window_X):
+        """Generates a prediction for the absolute latest market data."""
+        self.model.eval()  # Set to evaluation mode (turns off dropout for live inference)
+
+        with torch.no_grad():  # Don't calculate gradients (saves memory/speed)
+            # Convert the single numpy window into a PyTorch tensor
+            # unsqueeze(0) adds a "batch" dimension, making it shape (1, 60, 3)
+            X_tensor = torch.tensor(recent_window_X, dtype=torch.float32).unsqueeze(0).to(self.device)
+
+            # Get the prediction
+            predicted_log_return = self.model(X_tensor)
+
+            # Convert back to a standard Python float
+            return predicted_log_return.item()
