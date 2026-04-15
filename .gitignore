@@ -1,0 +1,6 @@
+.venv/
+.idea/
+__pycache__/
+pyproject.toml
+uv.lock
+config/keys.txt

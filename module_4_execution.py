@@ -62,10 +62,47 @@ class ExecutionManager:
             order_side = 'buy' if signal == 'BUY' else 'sell'
 
             # --- THE PHYSICAL TRADE ---
-            order = self.exchange.create_market_order(symbol, order_side, trade_qty)
-
-            print(f"[SUCCESS] Order Filled! Trade ID: {order['id']}")
-            print(f"[SUCCESS] Executed at ${order['average'] if 'average' in order else current_price}")
+            main_order = self.exchange.create_market_order(symbol, order_side, trade_qty)
+            filled_price = main_order.get('average') or current_price
+            
+            print(f"[SUCCESS] Entry Order Filled! Trade ID: {main_order['id']}")
+            print(f"[SUCCESS] Executed at ${filled_price:.4f}")
+            
+            # --- RISK MANAGEMENT ORDERS (CCXT) ---
+            # We place the opposites of the entry
+            exit_side = 'sell' if signal == 'BUY' else 'buy'
+            
+            # Recalculate exact targets based on real filled price to be safe
+            sl, tp1, tp2, tp3 = self.calculate_targets(filled_price, signal)
+            
+            print("[EXECUTION] Dispatching Stop-Loss & Take-Profit layers...")
+            
+            try:
+                # Place Stop Loss Limit Order (Standard for Binance Spot)
+                sl_order = self.exchange.create_order(
+                    symbol=symbol,
+                    type='STOP_LOSS_LIMIT',
+                    side=exit_side,
+                    amount=trade_qty,
+                    price=sl,
+                    params={'stopPrice': sl, 'timeInForce': 'GTC'}
+                )
+                print(f"  --> [SECURED] Stop-Loss Limit placed at ${sl:.2f}")
+            except Exception as e_sl:
+                print(f"[WARNING] Could not place Stop-Loss order: {e_sl}")
+                
+            try:
+                # Place Limit Take Profit
+                tp_order = self.exchange.create_order(
+                    symbol=symbol,
+                    type='LIMIT',
+                    side=exit_side,
+                    amount=trade_qty,
+                    price=tp1
+                )
+                print(f"  --> [SECURED] Take-Profit Limit placed at ${tp1:.2f}")
+            except Exception as e_tp:
+                print(f"[WARNING] Could not place Take-Profit order: {e_tp}")
 
             # Reset failures on a successful execution
             self.consecutive_failures = 0

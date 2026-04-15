@@ -2,6 +2,8 @@
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
+import joblib
+import os
 from sklearn.preprocessing import StandardScaler
 
 
@@ -14,6 +16,20 @@ class FeatureEngineer:
         self.window_size = window_size
         self.feature_columns = []
         self.scaler = StandardScaler()
+
+    def save_scaler(self, filepath="models/scaler.pkl"):
+        """Saves the fitted scaler for live trading standardization."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        joblib.dump(self.scaler, filepath)
+        print(f"[ENGINEER] Scaler saved securely to {filepath}")
+
+    def load_scaler(self, filepath="models/scaler.pkl"):
+        """Loads a pre-trained scaler."""
+        if os.path.exists(filepath):
+            self.scaler = joblib.load(filepath)
+            print(f"[ENGINEER] Pre-trained Scaler loaded from {filepath}")
+        else:
+            print(f"[WARNING] Scaler file {filepath} not found. Must train first!")
 
     def apply_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculates stationary technical indicators."""

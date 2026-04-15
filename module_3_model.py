@@ -84,6 +84,22 @@ class ModelEngine:
 
         print("[SUCCESS] Neural Network Training Complete.")
 
+    def save_model(self, filepath="models/lstm_weights.pth"):
+        """Saves the PyTorch weights."""
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        torch.save(self.model.state_dict(), filepath)
+        print(f"[MODEL] Weights saved securely to {filepath}")
+
+    def load_weights(self, filepath="models/lstm_weights.pth"):
+        """Loads existing PyTorch weights into the network."""
+        import os
+        if os.path.exists(filepath):
+            self.model.load_state_dict(torch.load(filepath, map_location=self.device, weights_only=True))
+            print(f"[MODEL] Pre-trained weights loaded from {filepath}")
+        else:
+            print(f"[WARNING] Weights file {filepath} not found. Model is using random initialized weights!")
+
     def predict_next_candle(self, recent_window_X):
         """Generates a prediction for the absolute latest market data."""
         self.model.eval()  # Set to evaluation mode (turns off dropout for live inference)
