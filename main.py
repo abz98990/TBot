@@ -3,6 +3,7 @@ import json
 import sys
 import time
 import asyncio
+import subprocess
 import numpy as np
 import msvcrt
 from datetime import datetime, timedelta
@@ -69,7 +70,7 @@ async def async_input(prompt: str, timeout: int = 10):
         await asyncio.sleep(0.05)
 
 
-async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor):
+async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, auto_trade=False):
     """The highly autonomous, asynchronous inference loop isolated per coin."""
     print(f"[SYSTEM] Booting isolated Tracker Thread for {coin}...")
     
@@ -83,6 +84,18 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor):
     # Pre-loading the weights rather than training from scratch every hour!
     ai_engine.load_weights(model_filepath)
     engineer.load_scaler(scaler_filepath)
+
+    last_prediction_pct = None
+    last_current_price = None
+    open_position = None
+    initial_entry_price = None
+    cumulative_net_pnl = 0.0
+
+    log_file = os.path.join("logs", f"{coin_clean}_performance.csv")
+    os.makedirs("logs", exist_ok=True)
+    if not os.path.exists(log_file):
+        with open(log_file, "w") as f:
+            f.write("timestamp,last_price,predicted_pct,actual_pct,mse,cumulative_pnl\n")
 
     while True:
         try:
@@ -99,21 +112,78 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor):
                 await asyncio.sleep(60)
                 continue
 
+            current_price = df['close'].iloc[-1]
+
+            # --- Position Management (Single Candle Exit) ---
+            if open_position is not None:
+                print(f"\n[SYSTEM] Candle closed. Closing existing position for {coin}...")
+                exit_price = await asyncio.to_thread(executor.close_position, coin, open_position)
+                if exit_price and exit_price > 0:
+                    current_price = exit_price # Use the actual exit price for our PnL calc
+                    
+                # Calculate trade PnL
+                entry_price = open_position['entry_price']
+                if open_position['side'] == 'buy':
+                    trade_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                else:
+                    trade_pnl_pct = ((entry_price - current_price) / entry_price) * 100
+                    
+                cumulative_net_pnl += trade_pnl_pct
+                print(f"[TRACKING] Trade PnL: {trade_pnl_pct:+.2f}% | Cumulative Net PnL: {cumulative_net_pnl:+.2f}%")
+                
+                if initial_entry_price is not None:
+                    asset_deviation = ((current_price - initial_entry_price) / initial_entry_price) * 100
+                    print(f"[TRACKING] Asset deviation since FIRST trade: {asset_deviation:+.2f}%")
+                
+                open_position = None
+            # ------------------------------------------------
+
+            # --- Quantitative Analysis ---
+            if last_prediction_pct is not None and last_current_price is not None:
+                actual_log_return = np.log(current_price / last_current_price)
+                actual_pct = (np.exp(actual_log_return) - 1) * 100
+                mse = (last_prediction_pct - actual_pct) ** 2
+                
+                print(f"\n[QUANTITATIVE ANALYSIS] {coin}")
+                print(f"Previous Prediction : {last_prediction_pct:+.4f}%")
+                print(f"Actual Movement     : {actual_pct:+.4f}%")
+                print(f"Deviation (MSE)     : {mse:.6f}")
+                
+                with open(log_file, "a") as f:
+                    f.write(f"{cycle_time},{last_current_price},{last_prediction_pct:.4f},{actual_pct:.4f},{mse:.6f},{cumulative_net_pnl:.4f}\n")
+            # -----------------------------
+
             # 2. Synthesize & Normalize
             df_features = engineer.apply_technical_indicators(df)
-            df_targets = engineer.engineer_target_variable(df_features)
             
-            # is_training=False ensures we ONLY apply the historical scaler and don't re-fit!
-            df_normalized = engineer.normalize_data(df_targets, is_training=False)
-            X, y = engineer.create_3d_tensor(df_normalized)
+            df_train = df_features.copy()
+            df_train = engineer.engineer_target_variable(df_train)
+            df_train = engineer.normalize_data(df_train, is_training=False)
+            X_train, y_train = engineer.create_3d_tensor(df_train)
+
+            # Continuous Calibration (Online Learning)
+            print(f"[MODEL] Calibrating {coin} with latest actuals...")
+            await asyncio.to_thread(ai_engine.train, X_train, y_train, epochs=3, batch_size=32, verbose=False)
+            await asyncio.to_thread(ai_engine.save_model, model_filepath)
 
             # 3. Live Inference
-            latest_window = X[-1]
-            predicted_return = await asyncio.to_thread(ai_engine.predict_next_candle, latest_window)
+            df_infer = df_features.copy()
+            df_infer[engineer.feature_columns] = engineer.scaler.transform(df_infer[engineer.feature_columns])
+            
+            feature_data = df_infer[engineer.feature_columns].values
+            latest_window = feature_data[-engineer.window_size:]
+            
+            predicted_return_amplified = await asyncio.to_thread(ai_engine.predict_next_candle, latest_window)
+            
+            # The model was trained on 100x amplified log returns, so we revert it
+            predicted_log_return = predicted_return_amplified / 100
 
-            predicted_pct = (np.exp(predicted_return) - 1) * 100
-            current_price = df['close'].iloc[-1]
-            predicted_target_price = current_price * np.exp(predicted_return)
+            predicted_pct = (np.exp(predicted_log_return) - 1) * 100
+            predicted_target_price = current_price * np.exp(predicted_log_return)
+
+            # Update tracking state
+            last_prediction_pct = predicted_pct
+            last_current_price = current_price
 
             t_now_str = datetime.now().strftime("%H:%M:%S")
 
@@ -126,22 +196,35 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor):
             print(f"=" * 60)
 
             # 4. Real-time Async Execution Router
-            if predicted_pct > 0.1 or predicted_pct < -0.1:
-                signal_direction = 'BUY' if predicted_pct > 0.1 else 'SELL'
+            if predicted_pct > 0.01 or predicted_pct < -0.01:
+                signal_direction = 'BUY' if predicted_pct > 0.01 else 'SELL'
                 print(f"\n[{coin}] ACTIONABLE SIGNAL DETECTED: {signal_direction}")
 
-                auth = await async_input(
-                    f"[AUTHORIZATION REQUIRED] Execute {signal_direction} order on {coin} at ${current_price:.4f}? (y/n within 10s): ", 
-                    timeout=10
-                )
+                if auto_trade:
+                    auth = 'y'
+                    print(f"[API] Auto-Trade is ACTIVE. Bypassing manual authorization.")
+                else:
+                    auth = await async_input(
+                        f"[AUTHORIZATION REQUIRED] Execute {signal_direction} order on {coin} at ${current_price:.4f}? (y/n within 10s): ", 
+                        timeout=10
+                    )
 
                 if auth and auth.strip().lower() == 'y':
                     print(f"\n[SYSTEM] Authorization accepted for {coin}. Engaging Execution Router...")
-                    await asyncio.to_thread(executor.process_signal, coin, signal_direction, current_price)
+                    
+                    # Binance requires trades to have a minimum value of usually $10 (MIN_NOTIONAL)
+                    # We dynamically calculate the coin quantity to equate to exactly $15.00 USD securely.
+                    trade_qty = 15.0 / current_price
+                    
+                    position_info = await asyncio.to_thread(executor.process_signal, coin, signal_direction, current_price, trade_qty)
+                    if position_info:
+                        open_position = position_info
+                        if initial_entry_price is None:
+                            initial_entry_price = position_info['entry_price']
                 else:
                     print(f"[SYSTEM] Authorization denied or timed out for {coin}. Trade aborted.")
             else:
-                print(f"\n[ACTION] Market is flat for {coin} (Move < 0.1%). HOLD. No execution required.")
+                print(f"\n[ACTION] Market is flat for {coin} (Move < 0.01%). HOLD. No execution required.")
 
             print(f"[{coin}] Hibernating for {timeframe} until next candle...")
             await asyncio.sleep(sleep_seconds)
@@ -181,10 +264,21 @@ async def main_async():
 
     print(f"\n[SYSTEM] ENTERING AUTONOMOUS LIVE INFERENCE PHASE.")
     
+    launch_dash = input("\nLaunch Real-Time Dashboard alongside bot? (y/n) [Default: y]: ").strip().lower()
+    if launch_dash != 'n':
+        target_csv = f"logs/{selected_coins[0].replace('/', '_')}_performance.csv"
+        print(f"[SYSTEM] Spawning dashboard.py in a background process...")
+        # Open in a new console window on Windows
+        creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+        subprocess.Popen([sys.executable, "dashboard.py", target_csv], creationflags=creationflags)
+
+    auto_trade_input = input("\nEnable Auto-Trading (bypass 10s manual confirmation)? (y/n) [Default: n]: ").strip().lower()
+    auto_trade = auto_trade_input == 'y'
+
     # Launch parallel tracking loops for multiple coins
     tasks = []
     for coin in selected_coins:
-        tasks.append(track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor))
+        tasks.append(track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, auto_trade=auto_trade))
         
     # Wait indefinitely as the loops run in parallel
     await asyncio.gather(*tasks)

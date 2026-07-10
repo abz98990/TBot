@@ -62,7 +62,8 @@ class FeatureEngineer:
 
         # Log Return Formula: ln(Price_t / Price_t-1)
         # We use shift(-1) to pull the NEXT candle's return up to the CURRENT row
-        df['target_return'] = np.log(df['close'].shift(-1) / df['close'])
+        # Amplified by 100 so the LSTM predicts percentages (1.5) instead of raw fractions (0.015)
+        df['target_return'] = np.log(df['close'].shift(-1) / df['close']) * 100
 
         # Drop the final row because it has no "next" candle to predict
         df.dropna(inplace=True)

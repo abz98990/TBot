@@ -5,6 +5,25 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 
+class DirectionalMSELoss(nn.Module):
+    """
+    Custom loss function that multiplies the MSE by a penalty factor
+    if the model predicts the wrong direction (sign mismatch).
+    """
+    def __init__(self, penalty=5.0):
+        super(DirectionalMSELoss, self).__init__()
+        self.penalty = penalty
+        self.mse = nn.MSELoss(reduction='none')
+
+    def forward(self, y_pred, y_true):
+        loss = self.mse(y_pred, y_true)
+        # Check if the signs are different
+        wrong_direction = (y_pred * y_true) < 0
+        # Multiply loss by penalty where the direction was wrong
+        loss[wrong_direction] *= self.penalty
+        return loss.mean()
+
+
 class LSTMPredictor(nn.Module):
     def __init__(self, input_size=3, hidden_size=64, num_layers=2, dropout=0.2):
         """
@@ -44,12 +63,13 @@ class ModelEngine:
         print(f"[MODEL] Initializing Engine on device: {self.device}")
 
         self.model = LSTMPredictor(input_size=input_size).to(self.device)
-        self.criterion = nn.MSELoss()  # Mean Squared Error
+        self.criterion = DirectionalMSELoss(penalty=5.0)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
-    def train(self, X_numpy, y_numpy, epochs=20, batch_size=32):
+    def train(self, X_numpy, y_numpy, epochs=20, batch_size=32, verbose=True):
         """The training loop where the bot learns."""
-        print(f"\n[MODEL] Commencing Training Phase ({epochs} Epochs)...")
+        if verbose:
+            print(f"\n[MODEL] Commencing Training Phase ({epochs} Epochs)...")
 
         # 1. Convert NumPy arrays to PyTorch Tensors
         X_tensor = torch.tensor(X_numpy, dtype=torch.float32).to(self.device)
@@ -80,9 +100,11 @@ class ModelEngine:
                 epoch_loss += loss.item()
 
             avg_loss = epoch_loss / len(dataloader)
-            print(f"   Epoch {epoch + 1:02d}/{epochs} | MSE Loss: {avg_loss:.6f}")
+            if verbose:
+                print(f"   Epoch {epoch + 1:02d}/{epochs} | MSE Loss: {avg_loss:.6f}")
 
-        print("[SUCCESS] Neural Network Training Complete.")
+        if verbose:
+            print("[SUCCESS] Neural Network Training Complete.")
 
     def save_model(self, filepath="models/lstm_weights.pth"):
         """Saves the PyTorch weights."""
