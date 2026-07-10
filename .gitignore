@@ -1,0 +1,8 @@
+.venv/
+.idea/
+__pycache__/
+pyproject.toml
+uv.lock
+config/keys.txt
+~$t Requirements Document Finalized.docx
+Bot Requirements Document Finalized.docx

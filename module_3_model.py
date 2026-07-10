@@ -44,12 +44,13 @@ class ModelEngine:
         print(f"[MODEL] Initializing Engine on device: {self.device}")
 
         self.model = LSTMPredictor(input_size=input_size).to(self.device)
-        self.criterion = nn.MSELoss()  # Mean Squared Error
+        self.criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy for Classification
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
-    def train(self, X_numpy, y_numpy, epochs=20, batch_size=32):
+    def train(self, X_numpy, y_numpy, epochs=20, batch_size=32, verbose=True):
         """The training loop where the bot learns."""
-        print(f"\n[MODEL] Commencing Training Phase ({epochs} Epochs)...")
+        if verbose:
+            print(f"\n[MODEL] Commencing Training Phase ({epochs} Epochs)...")
 
         # 1. Convert NumPy arrays to PyTorch Tensors
         X_tensor = torch.tensor(X_numpy, dtype=torch.float32).to(self.device)
@@ -80,9 +81,27 @@ class ModelEngine:
                 epoch_loss += loss.item()
 
             avg_loss = epoch_loss / len(dataloader)
-            print(f"   Epoch {epoch + 1:02d}/{epochs} | MSE Loss: {avg_loss:.6f}")
+            if verbose:
+                print(f"   Epoch {epoch + 1:02d}/{epochs} | MSE Loss: {avg_loss:.6f}")
 
-        print("[SUCCESS] Neural Network Training Complete.")
+        if verbose:
+            print("[SUCCESS] Neural Network Training Complete.")
+
+    def save_model(self, filepath="models/lstm_weights.pth"):
+        """Saves the PyTorch weights."""
+        import os
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        torch.save(self.model.state_dict(), filepath)
+        print(f"[MODEL] Weights saved securely to {filepath}")
+
+    def load_weights(self, filepath="models/lstm_weights.pth"):
+        """Loads existing PyTorch weights into the network."""
+        import os
+        if os.path.exists(filepath):
+            self.model.load_state_dict(torch.load(filepath, map_location=self.device, weights_only=True))
+            print(f"[MODEL] Pre-trained weights loaded from {filepath}")
+        else:
+            print(f"[WARNING] Weights file {filepath} not found. Model is using random initialized weights!")
 
     def predict_next_candle(self, recent_window_X):
         """Generates a prediction for the absolute latest market data."""
@@ -93,8 +112,9 @@ class ModelEngine:
             # unsqueeze(0) adds a "batch" dimension, making it shape (1, 60, 3)
             X_tensor = torch.tensor(recent_window_X, dtype=torch.float32).unsqueeze(0).to(self.device)
 
-            # Get the prediction
-            predicted_log_return = self.model(X_tensor)
+            # Get the raw logit prediction
+            logit = self.model(X_tensor)
 
-            # Convert back to a standard Python float
-            return predicted_log_return.item()
+            # Apply Sigmoid to convert to probability (0.0 to 1.0)
+            probability = torch.sigmoid(logit).item()
+            return probability

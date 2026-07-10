@@ -2,6 +2,8 @@
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
+import joblib
+import os
 from sklearn.preprocessing import StandardScaler
 
 
@@ -14,6 +16,20 @@ class FeatureEngineer:
         self.window_size = window_size
         self.feature_columns = []
         self.scaler = StandardScaler()
+
+    def save_scaler(self, filepath="models/scaler.pkl"):
+        """Saves the fitted scaler for live trading standardization."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        joblib.dump(self.scaler, filepath)
+        print(f"[ENGINEER] Scaler saved securely to {filepath}")
+
+    def load_scaler(self, filepath="models/scaler.pkl"):
+        """Loads a pre-trained scaler."""
+        if os.path.exists(filepath):
+            self.scaler = joblib.load(filepath)
+            print(f"[ENGINEER] Pre-trained Scaler loaded from {filepath}")
+        else:
+            print(f"[WARNING] Scaler file {filepath} not found. Must train first!")
 
     def apply_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculates stationary technical indicators."""
@@ -39,14 +55,13 @@ class FeatureEngineer:
 
     def engineer_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculates the Forward Log Return for the NEXT candle.
-        This is the ground-truth value the LSTM will try to predict.
+        Calculates the Binary Forward Label for the NEXT candle.
+        1 = UP (Green), 0 = DOWN/FLAT (Red).
         """
-        print("[ENGINEER] Calculating Forward Log Returns (Target)...")
+        print("[ENGINEER] Calculating Forward Classification Labels (Target)...")
 
-        # Log Return Formula: ln(Price_t / Price_t-1)
-        # We use shift(-1) to pull the NEXT candle's return up to the CURRENT row
-        df['target_return'] = np.log(df['close'].shift(-1) / df['close'])
+        # Classification Target: 1 if next close > current close, else 0
+        df['target_class'] = (df['close'].shift(-1) > df['close']).astype(int)
 
         # Drop the final row because it has no "next" candle to predict
         df.dropna(inplace=True)
@@ -75,7 +90,7 @@ class FeatureEngineer:
 
         # Extract raw numpy arrays for speed
         feature_data = df[self.feature_columns].values
-        target_data = df['target_return'].values
+        target_data = df['target_class'].values
 
         X, y = [], []
 

@@ -1,134 +1,289 @@
+import os
+import json
 import sys
-from datetime import datetime, timedelta
+import time
+import asyncio
+import subprocess
 import numpy as np
+import msvcrt
+from datetime import datetime, timedelta
+
 from module_1_data import DataStreamer
-from module_2_features import FeatureEngineer  # NEW: Importing Module 2
+from module_2_features import FeatureEngineer
 from module_3_model import ModelEngine
 from module_4_execution import ExecutionManager
 
+CREDENTIALS_FILE = os.path.join("config", "api_keys.json")
 
-def run_cli():
-    print("=" * 50)
-    print(" NEURAL TRADING BOT CLI v1.1 ".center(50, "="))
-    print("=" * 50)
 
-    # 1. Secure Credential Input
+def load_or_prompt_credentials():
+    """Auto-reads credentials from a file, or prompts and saves them for future use."""
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            with open(CREDENTIALS_FILE, 'r') as f:
+                keys = json.load(f)
+                print(f"[SYSTEM] Loaded API credentials automatically from {CREDENTIALS_FILE}")
+                return keys.get("api_key", ""), keys.get("api_secret", "")
+        except Exception as e:
+            print(f"[ERROR] Failed to read {CREDENTIALS_FILE}: {e}")
+
     print("\n--- Exchange Authentication ---")
-    api_key = "CYDdL2sD4wsBy1g1mte1OieivnbBpuxwN63s0RoyYtxRLHjffGabECjvXmBcYacW"
+    api_key = "CYDdL2sD4wsBy1g1mte1OieivnbBpuxwN63s0RoyYtxRLHjffGabECjvXmBcYacW" # Demo Key
     api_secret = "MSQRV7BnrVv28bJ6DkxtckXSpu8jkqZ38XuG8ASUjoueoMaAKJ7y31OqhggTV6NG"
 
     if not api_key or not api_secret:
         print("[FATAL] Credentials cannot be empty. Exiting.")
         sys.exit(1)
 
-    # 2. Coin Selection
-    print("\n--- Strategy Parameters ---")
-    coins_input = "BTC/USDT"
-    selected_coins = [coin.strip().upper() for coin in coins_input.split(',')]
-    timeframe = "30m"
+    try:
+        os.makedirs("config", exist_ok=True)
+        with open(CREDENTIALS_FILE, 'w') as f:
+            json.dump({"api_key": api_key, "api_secret": api_secret}, f, indent=4)
+        print(f"[SYSTEM] Credentials securely saved to {CREDENTIALS_FILE} for future use.")
+    except Exception as e:
+        print(f"[WARNING] Could not save credentials: {e}")
 
-    # Fix common formatting error gracefully
+    return api_key, api_secret
+
+
+async def async_input(prompt: str, timeout: int = 10):
+    """Non-blocking Windows CLI input with timeout. Stops UI threads from hanging indefinitely."""
+    print(prompt, end='', flush=True)
+    start_time = time.time()
+    response = ""
+    while True:
+        if msvcrt.kbhit():
+            char = msvcrt.getwche()
+            if char in ('\r', '\n'):
+                print()
+                return response
+            elif char == '\b':
+                response = response[:-1]
+                print(" \b", end="", flush=True)
+            else:
+                response += char
+        
+        if time.time() - start_time > timeout:
+            print("\n[SYSTEM] Input timed out (no response). Continuing execution...")
+            return None
+            
+        await asyncio.sleep(0.05)
+
+
+async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, auto_trade=False):
+    """The highly autonomous, asynchronous inference loop isolated per coin."""
+    print(f"[SYSTEM] Booting isolated Tracker Thread for {coin}...")
+    
+    ai_engine = ModelEngine(input_size=3)
+    engineer = FeatureEngineer(window_size=60)
+    
+    coin_clean = coin.replace('/', '_')
+    model_filepath = os.path.join("models", f"{coin_clean}_lstm_weights.pth")
+    scaler_filepath = os.path.join("models", f"{coin_clean}_scaler.pkl")
+    
+    # Pre-loading the weights rather than training from scratch every hour!
+    ai_engine.load_weights(model_filepath)
+    engineer.load_scaler(scaler_filepath)
+
+    last_prediction_prob = None
+    last_current_price = None
+    open_position = None
+    initial_entry_price = None
+    cumulative_net_pnl = 0.0
+
+    log_file = os.path.join("logs", f"{coin_clean}_performance.csv")
+    os.makedirs("logs", exist_ok=True)
+    if not os.path.exists(log_file):
+        with open(log_file, "w") as f:
+            f.write("timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl\n")
+
+    while True:
+        try:
+            cycle_time = datetime.now().strftime('%H:%M:%S')
+            
+            # 1. Fetch data off the main thread so we don't halt other coin loops
+            historical_data = await asyncio.to_thread(
+                streamer.fetch_historical_candles, [coin], timeframe, 500
+            )
+            df = historical_data.get(coin)
+            
+            if df is None or df.empty:
+                print(f"[WARNING] Invalid data returned for {coin}, sleeping...")
+                await asyncio.sleep(60)
+                continue
+
+            current_price = df['close'].iloc[-1]
+
+            # --- Position Management (Single Candle Exit) ---
+            if open_position is not None:
+                print(f"\n[SYSTEM] Candle closed. Closing existing position for {coin}...")
+                exit_price = await asyncio.to_thread(executor.close_position, coin, open_position)
+                if exit_price and exit_price > 0:
+                    current_price = exit_price # Use the actual exit price for our PnL calc
+                    
+                # Calculate trade PnL
+                entry_price = open_position['entry_price']
+                if open_position['side'] == 'buy':
+                    trade_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                else:
+                    trade_pnl_pct = ((entry_price - current_price) / entry_price) * 100
+                    
+                cumulative_net_pnl += trade_pnl_pct
+                print(f"[TRACKING] Trade PnL: {trade_pnl_pct:+.2f}% | Cumulative Net PnL: {cumulative_net_pnl:+.2f}%")
+                
+                if initial_entry_price is not None:
+                    asset_deviation = ((current_price - initial_entry_price) / initial_entry_price) * 100
+                    print(f"[TRACKING] Asset deviation since FIRST trade: {asset_deviation:+.2f}%")
+                
+                open_position = None
+            # ------------------------------------------------
+
+            # --- Quantitative Analysis ---
+            if last_prediction_prob is not None and last_current_price is not None:
+                # Actual Class: 1 if price went UP, 0 if DOWN/FLAT
+                actual_class = 1 if current_price > last_current_price else 0
+                
+                # Check if model correctly predicted the class (threshold at 0.5)
+                predicted_class = 1 if last_prediction_prob > 0.5 else 0
+                is_correct = int(predicted_class == actual_class)
+                
+                print(f"\n[QUANTITATIVE ANALYSIS] {coin}")
+                print(f"Previous Confidence : {last_prediction_prob*100:.2f}% (UP)")
+                print(f"Actual Outcome      : {'UP' if actual_class == 1 else 'DOWN'}")
+                print(f"Prediction Correct? : {'YES' if is_correct else 'NO'}")
+                
+                with open(log_file, "a") as f:
+                    f.write(f"{cycle_time},{last_current_price},{last_prediction_prob:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f}\n")
+            # -----------------------------
+
+            # 2. Synthesize & Normalize
+            df_features = engineer.apply_technical_indicators(df)
+            
+            df_train = df_features.copy()
+            df_train = engineer.engineer_target_variable(df_train)
+            df_train = engineer.normalize_data(df_train, is_training=False)
+            X_train, y_train = engineer.create_3d_tensor(df_train)
+
+            # Continuous Calibration (Online Learning)
+            print(f"[MODEL] Calibrating {coin} with latest actuals...")
+            await asyncio.to_thread(ai_engine.train, X_train, y_train, epochs=3, batch_size=32, verbose=False)
+            await asyncio.to_thread(ai_engine.save_model, model_filepath)
+
+            # 3. Live Inference
+            df_infer = df_features.copy()
+            df_infer[engineer.feature_columns] = engineer.scaler.transform(df_infer[engineer.feature_columns])
+            
+            feature_data = df_infer[engineer.feature_columns].values
+            latest_window = feature_data[-engineer.window_size:]
+            
+            predicted_prob = await asyncio.to_thread(ai_engine.predict_next_candle, latest_window)
+
+            # Update tracking state
+            last_prediction_prob = predicted_prob
+            last_current_price = current_price
+
+            t_now_str = datetime.now().strftime("%H:%M:%S")
+
+            print(f"\n" + "=" * 60)
+            print(f"AI CLASSIFICATION REPORT [{t_now_str}]: {coin} ".center(60, "="))
+            print(f"=" * 60)
+            print(f"Current Rate: ${current_price:.6f}")
+            print(f"Confidence (UP): {predicted_prob*100:.2f}%")
+            print(f"=" * 60)
+
+            # 4. Real-time Async Execution Router
+            # Trade only if confidence is high (> 55% or < 45%)
+            if predicted_prob > 0.55 or predicted_prob < 0.45:
+                signal_direction = 'BUY' if predicted_prob > 0.55 else 'SELL'
+                print(f"\n[{coin}] HIGH CONFIDENCE SIGNAL DETECTED: {signal_direction}")
+
+                if auto_trade:
+                    auth = 'y'
+                    print(f"[API] Auto-Trade is ACTIVE. Bypassing manual authorization.")
+                else:
+                    auth = await async_input(
+                        f"[AUTHORIZATION REQUIRED] Execute {signal_direction} order on {coin} at ${current_price:.4f}? (y/n within 10s): ", 
+                        timeout=10
+                    )
+
+                if auth and auth.strip().lower() == 'y':
+                    print(f"\n[SYSTEM] Authorization accepted for {coin}. Engaging Execution Router...")
+                    
+                    # Binance requires trades to have a minimum value of usually $10 (MIN_NOTIONAL)
+                    # We dynamically calculate the coin quantity to equate to exactly $15.00 USD securely.
+                    trade_qty = 15.0 / current_price
+                    
+                    position_info = await asyncio.to_thread(executor.process_signal, coin, signal_direction, current_price, trade_qty)
+                    if position_info:
+                        open_position = position_info
+                        if initial_entry_price is None:
+                            initial_entry_price = position_info['entry_price']
+                else:
+                    print(f"[SYSTEM] Authorization denied or timed out for {coin}. Trade aborted.")
+            else:
+                print(f"\n[ACTION] AI is uncertain ({predicted_prob*100:.2f}%). HOLD. No execution required.")
+
+            print(f"[{coin}] Hibernating for {timeframe} until next candle...")
+            await asyncio.sleep(sleep_seconds)
+
+        except Exception as loop_error:
+            print(f"\n[ERROR] Disruptions on {coin} loop: {loop_error}")
+            await asyncio.sleep(60)
+
+
+async def main_async():
+    print("=" * 60)
+    print(" NEURAL TRADING BOT v3.0 (ASYNC INFERENCE) ".center(60, "="))
+    print("=" * 60)
+
+    api_key, api_secret = load_or_prompt_credentials()
+
+    print("\n--- Strategy Parameters ---")
+    coins_input = input("Enter coins to trade (comma separated, max 5. e.g. BTC/USDT): ")
+    selected_coins = [coin.strip().upper() for coin in coins_input.split(',')]
+    if not selected_coins or selected_coins == ['']:
+        selected_coins = ['BTC/USDT']
+        
+    timeframe = input("Enter timeframe (e.g., 15m, 1h, 1d) [Default: 1h]: ").strip() or "1h"
     if timeframe.isnumeric():
         timeframe += 'm'
 
-    # ... [Skip down to where the system initializes] ...
-
-    # 3. System Initialization
     print("\n[SYSTEM] Initializing Core Architecture...")
-    try:
-        # Initialize Modules
-        streamer = DataStreamer(api_key, api_secret, testnet=True)
-        engineer = FeatureEngineer(window_size=60)
+    streamer = DataStreamer(api_key, api_secret, testnet=True)
+    executor = ExecutionManager(streamer.exchange)
 
-        # --- NEW: Initialize the Execution Router ---
-        executor = ExecutionManager(streamer.exchange)
+    tf_val = int(timeframe[:-1])
+    tf_unit = timeframe[-1].lower()
+    if tf_unit == 'm': sleep_seconds = tf_val * 60
+    elif tf_unit == 'h': sleep_seconds = tf_val * 3600
+    elif tf_unit == 'd': sleep_seconds = tf_val * 86400
+    else: sleep_seconds = 3600
 
-        # Fetch Data
-        print(f"\n[SYSTEM] Commencing Data Ingestion for {timeframe} timeframe...")
-        historical_data = streamer.fetch_historical_candles(
-            symbols=selected_coins,
-            timeframe=timeframe,
-            limit=500
-        )
+    print(f"\n[SYSTEM] ENTERING AUTONOMOUS LIVE INFERENCE PHASE.")
+    
+    launch_dash = input("\nLaunch Real-Time Dashboard alongside bot? (y/n) [Default: y]: ").strip().lower()
+    if launch_dash != 'n':
+        target_csv = f"logs/{selected_coins[0].replace('/', '_')}_performance.csv"
+        print(f"[SYSTEM] Spawning dashboard.py in a background process...")
+        # Open in a new console window on Windows
+        creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+        subprocess.Popen([sys.executable, "dashboard.py", target_csv], creationflags=creationflags)
 
-        for coin, df in historical_data.items():
-            print(f"\n--- Processing Pipeline for {coin} ---")
+    auto_trade_input = input("\nEnable Auto-Trading (bypass 10s manual confirmation)? (y/n) [Default: n]: ").strip().lower()
+    auto_trade = auto_trade_input == 'y'
 
-            df_features = engineer.apply_technical_indicators(df)
-            df_targets = engineer.engineer_target_variable(df_features)
-            df_normalized = engineer.normalize_data(df_targets, is_training=True)
+    # Launch parallel tracking loops for multiple coins
+    tasks = []
+    for coin in selected_coins:
+        tasks.append(track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, auto_trade=auto_trade))
+        
+    # Wait indefinitely as the loops run in parallel
+    await asyncio.gather(*tasks)
 
-            X, y = engineer.create_3d_tensor(df_normalized)
-
-            ai_engine = ModelEngine(input_size=3)
-            ai_engine.train(X, y, epochs=300, batch_size=32)
-
-            # --- LIVE PREDICTION ---
-            latest_window = X[-1]
-            print("\n[INFERENCE] Asking AI for next candle prediction...")
-            predicted_return = ai_engine.predict_next_candle(latest_window)
-
-            # 1. Price Math Translations
-            predicted_pct = (np.exp(predicted_return) - 1) * 100
-            current_price = df['close'].iloc[-1]
-            predicted_target_price = current_price * np.exp(predicted_return)
-
-            # 2. Time Math Translations
-            # Extract the number and the unit from the timeframe string (e.g., "15" and "m")
-            tf_val = int(timeframe[:-1])
-            tf_unit = timeframe[-1].lower()
-
-            if tf_unit == 'm':
-                delta = timedelta(minutes=tf_val)
-            elif tf_unit == 'h':
-                delta = timedelta(hours=tf_val)
-            elif tf_unit == 'd':
-                delta = timedelta(days=tf_val)
-            else:
-                delta = timedelta(hours=1)  # Fallback
-
-            # Calculate actual clock times
-            current_time = datetime.now()
-            target_time = current_time + delta
-
-            # Format times to be easily readable (HH:MM:SS)
-            time_fmt = "%H:%M:%S"
-            t_now_str = current_time.strftime(time_fmt)
-            t_target_str = target_time.strftime(time_fmt)
-
-            # 3. The Prediction Dashboard
-            print(f"\n" + "=" * 60)
-            print(f"AI PREDICTION REPORT: {coin} ".center(60, "="))
-            print(f"=" * 60)
-            print(f"Current Rate ({t_now_str})   : ${current_price:.4f}")
-            print(f"Target Rate  ({t_target_str})   : ${predicted_target_price:.4f}")
-            print(f"Expected Move                : {predicted_pct:+.4f}%")
-            print(f"=" * 60)
-
-            # --- THE FINAL HANDOFF TO MODULE 5 (HUMAN-IN-THE-LOOP) ---
-            if predicted_pct > 0.1 or predicted_pct < -0.1:
-                signal_direction = 'BUY' if predicted_pct > 0.1 else 'SELL'
-
-                print(f"\nACTIONABLE SIGNAL DETECTED: {signal_direction}")
-
-                auth = input(
-                    f"[AUTHORIZATION REQUIRED] Execute {signal_direction} order at ${current_price:.2f}? (y/n): ").strip().lower()
-
-                if auth == 'y':
-                    print("\n[SYSTEM] Authorization accepted. Engaging Execution Router...")
-                    executor.process_signal(coin, signal_direction, current_price)
-                else:
-                    print("\n[SYSTEM] Authorization denied. Trade aborted. Standing down.")
-
-            else:
-                print(f"\n[ACTION] Market is flat (Move < 0.1%). HOLD. No execution required.")
-
-    except Exception as e:
-        print(f"\n[FATAL] System execution failed: {e}")
 
 if __name__ == "__main__":
     try:
-        run_cli()
+        asyncio.run(main_async())
     except KeyboardInterrupt:
-        print("\n[SYSTEM] Process aborted by user.")
+        print("\n\n[SYSTEM] Process manually aborted by user. Shutting down Live Loop.")
         sys.exit(0)
