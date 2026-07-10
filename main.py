@@ -85,7 +85,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
     ai_engine.load_weights(model_filepath)
     engineer.load_scaler(scaler_filepath)
 
-    last_prediction_pct = None
+    last_prediction_prob = None
     last_current_price = None
     open_position = None
     initial_entry_price = None
@@ -95,7 +95,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
     os.makedirs("logs", exist_ok=True)
     if not os.path.exists(log_file):
         with open(log_file, "w") as f:
-            f.write("timestamp,last_price,predicted_pct,actual_pct,mse,cumulative_pnl\n")
+            f.write("timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl\n")
 
     while True:
         try:
@@ -139,18 +139,21 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             # ------------------------------------------------
 
             # --- Quantitative Analysis ---
-            if last_prediction_pct is not None and last_current_price is not None:
-                actual_log_return = np.log(current_price / last_current_price)
-                actual_pct = (np.exp(actual_log_return) - 1) * 100
-                mse = (last_prediction_pct - actual_pct) ** 2
+            if last_prediction_prob is not None and last_current_price is not None:
+                # Actual Class: 1 if price went UP, 0 if DOWN/FLAT
+                actual_class = 1 if current_price > last_current_price else 0
+                
+                # Check if model correctly predicted the class (threshold at 0.5)
+                predicted_class = 1 if last_prediction_prob > 0.5 else 0
+                is_correct = int(predicted_class == actual_class)
                 
                 print(f"\n[QUANTITATIVE ANALYSIS] {coin}")
-                print(f"Previous Prediction : {last_prediction_pct:+.4f}%")
-                print(f"Actual Movement     : {actual_pct:+.4f}%")
-                print(f"Deviation (MSE)     : {mse:.6f}")
+                print(f"Previous Confidence : {last_prediction_prob*100:.2f}% (UP)")
+                print(f"Actual Outcome      : {'UP' if actual_class == 1 else 'DOWN'}")
+                print(f"Prediction Correct? : {'YES' if is_correct else 'NO'}")
                 
                 with open(log_file, "a") as f:
-                    f.write(f"{cycle_time},{last_current_price},{last_prediction_pct:.4f},{actual_pct:.4f},{mse:.6f},{cumulative_net_pnl:.4f}\n")
+                    f.write(f"{cycle_time},{last_current_price},{last_prediction_prob:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f}\n")
             # -----------------------------
 
             # 2. Synthesize & Normalize
@@ -173,32 +176,26 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             feature_data = df_infer[engineer.feature_columns].values
             latest_window = feature_data[-engineer.window_size:]
             
-            predicted_return_amplified = await asyncio.to_thread(ai_engine.predict_next_candle, latest_window)
-            
-            # The model was trained on 100x amplified log returns, so we revert it
-            predicted_log_return = predicted_return_amplified / 100
-
-            predicted_pct = (np.exp(predicted_log_return) - 1) * 100
-            predicted_target_price = current_price * np.exp(predicted_log_return)
+            predicted_prob = await asyncio.to_thread(ai_engine.predict_next_candle, latest_window)
 
             # Update tracking state
-            last_prediction_pct = predicted_pct
+            last_prediction_prob = predicted_prob
             last_current_price = current_price
 
             t_now_str = datetime.now().strftime("%H:%M:%S")
 
             print(f"\n" + "=" * 60)
-            print(f"AI PREDICTION REPORT [{t_now_str}]: {coin} ".center(60, "="))
+            print(f"AI CLASSIFICATION REPORT [{t_now_str}]: {coin} ".center(60, "="))
             print(f"=" * 60)
             print(f"Current Rate: ${current_price:.6f}")
-            print(f"Target Rate : ${predicted_target_price:.6f}")
-            print(f"Expected Move: {predicted_pct:+.4f}%")
+            print(f"Confidence (UP): {predicted_prob*100:.2f}%")
             print(f"=" * 60)
 
             # 4. Real-time Async Execution Router
-            if predicted_pct > 0.01 or predicted_pct < -0.01:
-                signal_direction = 'BUY' if predicted_pct > 0.01 else 'SELL'
-                print(f"\n[{coin}] ACTIONABLE SIGNAL DETECTED: {signal_direction}")
+            # Trade only if confidence is high (> 55% or < 45%)
+            if predicted_prob > 0.55 or predicted_prob < 0.45:
+                signal_direction = 'BUY' if predicted_prob > 0.55 else 'SELL'
+                print(f"\n[{coin}] HIGH CONFIDENCE SIGNAL DETECTED: {signal_direction}")
 
                 if auto_trade:
                     auth = 'y'
@@ -224,7 +221,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
                 else:
                     print(f"[SYSTEM] Authorization denied or timed out for {coin}. Trade aborted.")
             else:
-                print(f"\n[ACTION] Market is flat for {coin} (Move < 0.01%). HOLD. No execution required.")
+                print(f"\n[ACTION] AI is uncertain ({predicted_prob*100:.2f}%). HOLD. No execution required.")
 
             print(f"[{coin}] Hibernating for {timeframe} until next candle...")
             await asyncio.sleep(sleep_seconds)

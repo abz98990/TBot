@@ -5,25 +5,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 
-class DirectionalMSELoss(nn.Module):
-    """
-    Custom loss function that multiplies the MSE by a penalty factor
-    if the model predicts the wrong direction (sign mismatch).
-    """
-    def __init__(self, penalty=5.0):
-        super(DirectionalMSELoss, self).__init__()
-        self.penalty = penalty
-        self.mse = nn.MSELoss(reduction='none')
-
-    def forward(self, y_pred, y_true):
-        loss = self.mse(y_pred, y_true)
-        # Check if the signs are different
-        wrong_direction = (y_pred * y_true) < 0
-        # Multiply loss by penalty where the direction was wrong
-        loss[wrong_direction] *= self.penalty
-        return loss.mean()
-
-
 class LSTMPredictor(nn.Module):
     def __init__(self, input_size=3, hidden_size=64, num_layers=2, dropout=0.2):
         """
@@ -63,7 +44,7 @@ class ModelEngine:
         print(f"[MODEL] Initializing Engine on device: {self.device}")
 
         self.model = LSTMPredictor(input_size=input_size).to(self.device)
-        self.criterion = DirectionalMSELoss(penalty=5.0)
+        self.criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy for Classification
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
 
     def train(self, X_numpy, y_numpy, epochs=20, batch_size=32, verbose=True):
@@ -131,8 +112,9 @@ class ModelEngine:
             # unsqueeze(0) adds a "batch" dimension, making it shape (1, 60, 3)
             X_tensor = torch.tensor(recent_window_X, dtype=torch.float32).unsqueeze(0).to(self.device)
 
-            # Get the prediction
-            predicted_log_return = self.model(X_tensor)
+            # Get the raw logit prediction
+            logit = self.model(X_tensor)
 
-            # Convert back to a standard Python float
-            return predicted_log_return.item()
+            # Apply Sigmoid to convert to probability (0.0 to 1.0)
+            probability = torch.sigmoid(logit).item()
+            return probability

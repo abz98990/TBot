@@ -52,16 +52,17 @@ def animate(i):
         ax1.legend(loc="upper left")
         ax1.grid(True, linestyle=':', alpha=0.3)
         
-        # 2. Middle Panel: Prediction Accuracy
+        # 2. Middle Panel: Prediction Confidence vs Actual Outcome
         ax2.clear()
-        ax2.plot(x, df['actual_pct'], color='lime', label='Actual Realized %', linewidth=1.5)
-        ax2.plot(x, df['predicted_pct'], color='orange', label='LSTM Predicted %', linestyle='--', linewidth=1.5)
-        ax2.axhline(0, color='white', linewidth=0.5, alpha=0.5)
-        ax2.set_ylabel("Movement %")
+        ax2.plot(x, df['actual_class'], color='lime', label='Actual Outcome (1=UP, 0=DOWN)', linewidth=1.5, drawstyle='steps-post')
+        ax2.plot(x, df['predicted_prob'], color='orange', label='LSTM Confidence (UP)', linewidth=1.5)
+        ax2.axhline(0.5, color='white', linewidth=0.5, alpha=0.5)
+        ax2.set_ylabel("Probability")
+        ax2.set_ylim(-0.1, 1.1)
         ax2.legend(loc="upper left")
         ax2.grid(True, linestyle=':', alpha=0.3)
         
-        # 3. Bottom Panel: Cumulative Net PnL and MSE
+        # 3. Bottom Panel: Cumulative Net PnL and Accuracy
         ax3.clear()
         ax3_mse.clear() # Clear the secondary axis as well
         
@@ -70,17 +71,22 @@ def animate(i):
             ax3.axhline(0, color='white', linewidth=0.5, alpha=0.5)
             ax3.set_ylabel("Net PnL %")
             
-            # Plot MSE on the pre-existing twin axis
-            ax3_mse.plot(x, df['mse'], color='red', label='MSE (Deviation)', linewidth=1, alpha=0.5)
-            ax3_mse.set_ylabel("MSE", color='red')
+            # Plot Accuracy on the pre-existing twin axis
+            # Accuracy is 0 (Wrong) or 1 (Right). Let's plot a moving average of accuracy to make it readable.
+            rolling_acc = df['accuracy'].rolling(window=5, min_periods=1).mean() * 100
+            ax3_mse.plot(x, rolling_acc, color='lime', label='Rolling Accuracy (5-tick) %', linewidth=1.5, alpha=0.8)
+            ax3_mse.set_ylabel("Accuracy %", color='lime')
+            ax3_mse.set_ylim(-5, 105)
             
             # Combine legends
             lines_1, labels_1 = ax3.get_legend_handles_labels()
             lines_2, labels_2 = ax3_mse.get_legend_handles_labels()
             ax3.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left')
         else:
-            ax3.plot(x, df['mse'], color='red', label='MSE (Deviation)')
-            ax3.set_ylabel("MSE")
+            rolling_acc = df['accuracy'].rolling(window=5, min_periods=1).mean() * 100
+            ax3.plot(x, rolling_acc, color='lime', label='Rolling Accuracy (5-tick) %')
+            ax3.set_ylabel("Accuracy %")
+            ax3.set_ylim(-5, 105)
             ax3.legend(loc="upper left")
             
         ax3.set_xlabel("Time (last 60 ticks)")

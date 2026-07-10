@@ -55,15 +55,13 @@ class FeatureEngineer:
 
     def engineer_target_variable(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculates the Forward Log Return for the NEXT candle.
-        This is the ground-truth value the LSTM will try to predict.
+        Calculates the Binary Forward Label for the NEXT candle.
+        1 = UP (Green), 0 = DOWN/FLAT (Red).
         """
-        print("[ENGINEER] Calculating Forward Log Returns (Target)...")
+        print("[ENGINEER] Calculating Forward Classification Labels (Target)...")
 
-        # Log Return Formula: ln(Price_t / Price_t-1)
-        # We use shift(-1) to pull the NEXT candle's return up to the CURRENT row
-        # Amplified by 100 so the LSTM predicts percentages (1.5) instead of raw fractions (0.015)
-        df['target_return'] = np.log(df['close'].shift(-1) / df['close']) * 100
+        # Classification Target: 1 if next close > current close, else 0
+        df['target_class'] = (df['close'].shift(-1) > df['close']).astype(int)
 
         # Drop the final row because it has no "next" candle to predict
         df.dropna(inplace=True)
@@ -92,7 +90,7 @@ class FeatureEngineer:
 
         # Extract raw numpy arrays for speed
         feature_data = df[self.feature_columns].values
-        target_data = df['target_return'].values
+        target_data = df['target_class'].values
 
         X, y = [], []
 
