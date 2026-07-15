@@ -11,6 +11,9 @@ class DataStreamer:
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,  # CRITICAL: Prevents Binance from banning your IP
+            'options': {
+                'adjustForTimeDifference': True, # Automatically synchronizes local clock offset with Binance
+            }
         })
         if testnet:
             self.exchange.set_sandbox_mode(True)
