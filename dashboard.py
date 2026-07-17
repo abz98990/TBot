@@ -21,12 +21,13 @@ print("[SYSTEM] Close the window to stop tracking.")
 
 # Set up the matplotlib figure
 plt.style.use('dark_background')
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
 fig.canvas.manager.set_window_title("T Bot - Real-Time Dashboard")
 fig.suptitle(f"Live Performance Tracking: {os.path.basename(target_csv)}", fontsize=14, color='white')
 
 # Create twin axis for MSE exactly ONCE outside the loop
 ax3_mse = ax3.twinx()
+ax4_macd = ax4.twinx()
 
 def animate(i):
     try:
@@ -93,15 +94,40 @@ def animate(i):
         if lines_1 or lines_2:
             ax3.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left')
             
-        ax3.set_xlabel("Time (last 60 ticks)")
+        ax3.grid(True, linestyle=':', alpha=0.3)
         
-        # Set x-ticks to show a few timestamps
+        # 4. Bottom Panel: Oscillators (RSI and MACD)
+        ax4.clear()
+        ax4_macd.clear()
+        
+        if 'rsi' in df.columns and 'macd_hist' in df.columns:
+            # RSI on main ax4 (0-100 scale)
+            ax4.plot(x, df['rsi'], color='cyan', label='RSI (14)', linewidth=1.5)
+            ax4.axhline(70, color='red', linestyle='--', linewidth=1, alpha=0.7)
+            ax4.axhline(30, color='lime', linestyle='--', linewidth=1, alpha=0.7)
+            ax4.set_ylim(-5, 105)
+            ax4.set_ylabel("RSI")
+            
+            # MACD Histogram as a bar chart on twinx
+            # Positive values in green, negative in red
+            colors = ['lime' if val > 0 else 'red' for val in df['macd_hist']]
+            ax4_macd.bar(x, df['macd_hist'], color=colors, alpha=0.5, label='MACD Histogram')
+            ax4_macd.set_ylabel("MACD Hist")
+            
+            # Combine legends safely if ax4 has lines
+            lines_4, labels_4 = ax4.get_legend_handles_labels()
+            lines_4_macd, labels_4_macd = ax4_macd.get_legend_handles_labels()
+            if lines_4 or lines_4_macd:
+                ax4.legend(lines_4 + lines_4_macd, labels_4 + labels_4_macd, loc='upper left')
+                
+        ax4.grid(True, linestyle=':', alpha=0.3)
+        ax4.set_xlabel("Time (last 60 ticks)")
+        
+        # Set x-ticks on the bottom-most axis (ax4 now instead of ax3)
         if len(x) > 0:
             tick_indices = [0, len(x)//2, len(x)-1]
-            ax3.set_xticks(tick_indices)
-            ax3.set_xticklabels([x_labels[i] for i in tick_indices])
-            
-        ax3.grid(True, linestyle=':', alpha=0.3)
+            ax4.set_xticks(tick_indices)
+            ax4.set_xticklabels([x_labels[i] for i in tick_indices])
         
     except Exception as e:
         # Silently fail on read errors (e.g., if main script is currently writing to the file)

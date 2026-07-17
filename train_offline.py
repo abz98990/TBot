@@ -54,7 +54,7 @@ def run_offline_training():
         X, y = engineer.create_3d_tensor(df_normalized)
 
         # Build Model
-        ai_engine = ModelEngine(input_size=3)
+        ai_engine = ModelEngine(input_size=5)
         
         # Train aggressively
         ai_engine.train(X, y, epochs=150, batch_size=32)

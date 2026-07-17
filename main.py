@@ -74,7 +74,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
     """The highly autonomous, asynchronous inference loop isolated per coin."""
     print(f"[SYSTEM] Booting isolated Tracker Thread for {coin}...")
     
-    ai_engine = ModelEngine(input_size=3)
+    ai_engine = ModelEngine(input_size=5)
     engineer = FeatureEngineer(window_size=60)
     
     coin_clean = coin.replace('/', '_')
@@ -87,6 +87,8 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
 
     last_prediction_prob = None
     last_current_price = None
+    last_rsi = None
+    last_macd_hist = None
     open_position = None
     initial_entry_price = None
     cumulative_net_pnl = 0.0
@@ -95,7 +97,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
     os.makedirs("logs", exist_ok=True)
     if not os.path.exists(log_file):
         with open(log_file, "w") as f:
-            f.write("timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl\n")
+            f.write("timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl,rsi,macd_hist\n")
 
     while True:
         try:
@@ -153,7 +155,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
                 print(f"Prediction Correct? : {'YES' if is_correct else 'NO'}")
                 
                 with open(log_file, "a") as f:
-                    f.write(f"{cycle_time},{last_current_price},{last_prediction_prob:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f}\n")
+                    f.write(f"{cycle_time},{last_current_price},{last_prediction_prob:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f},{last_rsi:.2f},{last_macd_hist:.4f}\n")
             # -----------------------------
 
             # 2. Synthesize & Normalize
@@ -181,6 +183,8 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             # Update tracking state
             last_prediction_prob = predicted_prob
             last_current_price = current_price
+            last_rsi = df_infer['RSI_14'].iloc[-1]
+            last_macd_hist = df_infer['MACDh_12_26_9'].iloc[-1]
 
             t_now_str = datetime.now().strftime("%H:%M:%S")
 
