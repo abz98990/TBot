@@ -183,8 +183,8 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             # Update tracking state
             last_prediction_prob = predicted_prob
             last_current_price = current_price
-            last_rsi = df_infer['RSI_14'].iloc[-1]
-            last_macd_hist = df_infer['MACDh_12_26_9'].iloc[-1]
+            last_rsi = df_features['RSI_14'].iloc[-1]
+            last_macd_hist = df_features['MACDh_12_26_9'].iloc[-1]
 
             t_now_str = datetime.now().strftime("%H:%M:%S")
 
