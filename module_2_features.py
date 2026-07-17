@@ -1,5 +1,6 @@
 # module_2_features.py
 import pandas as pd
+# pyrefly: ignore [missing-import]
 import pandas_ta as ta
 import numpy as np
 import joblib

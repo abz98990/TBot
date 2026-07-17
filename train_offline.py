@@ -57,7 +57,7 @@ def run_offline_training():
         ai_engine = ModelEngine(input_size=5)
         
         # Train aggressively
-        ai_engine.train(X, y, epochs=150, batch_size=32)
+        ai_engine.train(X, y, epochs=280, batch_size=128)
 
         # Define filepaths dynamically based on coin name (replaces / with _)
         coin_clean = coin.replace('/', '_')

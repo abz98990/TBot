@@ -82,7 +82,7 @@ class ModelEngine:
 
             avg_loss = epoch_loss / len(dataloader)
             if verbose:
-                print(f"   Epoch {epoch + 1:02d}/{epochs} | MSE Loss: {avg_loss:.6f}")
+                print(f"   Epoch {epoch + 1:02d}/{epochs} | BCE Loss: {avg_loss:.6f}")
 
         if verbose:
             print("[SUCCESS] Neural Network Training Complete.")
