@@ -103,6 +103,9 @@ def animate(i):
         if 'rsi' in df.columns and 'macd_hist' in df.columns:
             # RSI on main ax4 (0-100 scale)
             ax4.plot(x, df['rsi'], color='cyan', label='RSI (14)', linewidth=1.5)
+            if 'adx' in df.columns:
+                ax4.plot(x, df['adx'], color='yellow', label='ADX (Trend)', linewidth=2, alpha=0.8)
+                
             ax4.axhline(70, color='red', linestyle='--', linewidth=1, alpha=0.7)
             ax4.axhline(30, color='lime', linestyle='--', linewidth=1, alpha=0.7)
             ax4.set_ylim(-5, 105)
