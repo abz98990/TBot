@@ -85,11 +85,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
     ai_engine.load_weights(model_filepath)
     engineer.load_scaler(scaler_filepath)
 
-    last_prediction_prob = None
-    last_current_price = None
-    last_rsi = None
-    last_macd_hist = None
-    last_adx = None
+    prediction_queue = []
     open_position = None
     initial_entry_price = None
     cumulative_net_pnl = 0.0
@@ -117,46 +113,53 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
 
             current_price = df['close'].iloc[-1]
 
-            # --- Position Management (Single Candle Exit) ---
+            # --- Position Management (4-Candle Exit) ---
             if open_position is not None:
-                print(f"\n[SYSTEM] Candle closed. Closing existing position for {coin}...")
-                exit_price = await asyncio.to_thread(executor.close_position, coin, open_position)
-                if exit_price and exit_price > 0:
-                    current_price = exit_price # Use the actual exit price for our PnL calc
+                open_position['candles_held'] += 1
+                if open_position['candles_held'] >= 4:
+                    print(f"\n[SYSTEM] 4 Candles elapsed. Closing existing position for {coin}...")
+                    exit_price = await asyncio.to_thread(executor.close_position, coin, open_position)
+                    if exit_price and exit_price > 0:
+                        current_price = exit_price # Use the actual exit price for our PnL calc
+                        
+                    # Calculate trade PnL
+                    entry_price = open_position['entry_price']
+                    if open_position['side'] == 'buy':
+                        trade_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    else:
+                        trade_pnl_pct = ((entry_price - current_price) / entry_price) * 100
+                        
+                    cumulative_net_pnl += trade_pnl_pct
+                    print(f"[TRACKING] Trade PnL: {trade_pnl_pct:+.2f}% | Cumulative Net PnL: {cumulative_net_pnl:+.2f}%")
                     
-                # Calculate trade PnL
-                entry_price = open_position['entry_price']
-                if open_position['side'] == 'buy':
-                    trade_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+                    if initial_entry_price is not None:
+                        asset_deviation = ((current_price - initial_entry_price) / initial_entry_price) * 100
+                        print(f"[TRACKING] Asset deviation since FIRST trade: {asset_deviation:+.2f}%")
+                    
+                    open_position = None
                 else:
-                    trade_pnl_pct = ((entry_price - current_price) / entry_price) * 100
-                    
-                cumulative_net_pnl += trade_pnl_pct
-                print(f"[TRACKING] Trade PnL: {trade_pnl_pct:+.2f}% | Cumulative Net PnL: {cumulative_net_pnl:+.2f}%")
-                
-                if initial_entry_price is not None:
-                    asset_deviation = ((current_price - initial_entry_price) / initial_entry_price) * 100
-                    print(f"[TRACKING] Asset deviation since FIRST trade: {asset_deviation:+.2f}%")
-                
-                open_position = None
+                    print(f"\n[SYSTEM] Holding position for {coin}... ({open_position['candles_held']}/4 candles)")
             # ------------------------------------------------
 
             # --- Quantitative Analysis ---
-            if last_prediction_prob is not None and last_current_price is not None:
-                # Actual Class: 1 if price went UP, 0 if DOWN/FLAT
-                actual_class = 1 if current_price > last_current_price else 0
+            for p in prediction_queue:
+                p['candles_elapsed'] += 1
                 
-                # Check if model correctly predicted the class (threshold at 0.5)
-                predicted_class = 1 if last_prediction_prob > 0.5 else 0
+            matured_predictions = [p for p in prediction_queue if p['candles_elapsed'] >= 4]
+            prediction_queue = [p for p in prediction_queue if p['candles_elapsed'] < 4]
+            
+            for p in matured_predictions:
+                actual_class = 1 if current_price > p['price_then'] else 0
+                predicted_class = 1 if p['prob'] > 0.5 else 0
                 is_correct = int(predicted_class == actual_class)
                 
                 print(f"\n[QUANTITATIVE ANALYSIS] {coin}")
-                print(f"Previous Confidence : {last_prediction_prob*100:.2f}% (UP)")
-                print(f"Actual Outcome      : {'UP' if actual_class == 1 else 'DOWN'}")
-                print(f"Prediction Correct? : {'YES' if is_correct else 'NO'}")
+                print(f"Prediction from 4 candles ago: {p['prob']*100:.2f}% (UP)")
+                print(f"Actual Outcome (4-candle)    : {'UP' if actual_class == 1 else 'DOWN'}")
+                print(f"Prediction Correct?          : {'YES' if is_correct else 'NO'}")
                 
                 with open(log_file, "a") as f:
-                    f.write(f"{cycle_time},{last_current_price},{last_prediction_prob:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f},{last_rsi:.2f},{last_macd_hist:.4f},{last_adx:.2f}\n")
+                    f.write(f"{cycle_time},{p['price_then']},{p['prob']:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f},{p['rsi']:.2f},{p['macd_hist']:.4f},{p['adx']:.2f}\n")
             # -----------------------------
 
             # 2. Synthesize & Normalize
@@ -181,12 +184,15 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             
             predicted_prob = await asyncio.to_thread(ai_engine.predict_next_candle, latest_window)
 
-            # Update tracking state
-            last_prediction_prob = predicted_prob
-            last_current_price = current_price
-            last_rsi = df_features['RSI_14'].iloc[-1]
-            last_macd_hist = df_features['MACDh_12_26_9'].iloc[-1]
-            last_adx = df_features['ADX_14'].iloc[-1]
+            # Enqueue the new prediction
+            prediction_queue.append({
+                'prob': predicted_prob,
+                'price_then': current_price,
+                'rsi': df_features['RSI_14'].iloc[-1],
+                'macd_hist': df_features['MACDh_12_26_9'].iloc[-1],
+                'adx': df_features['ADX_14'].iloc[-1],
+                'candles_elapsed': 0
+            })
 
             t_now_str = datetime.now().strftime("%H:%M:%S")
 
@@ -221,6 +227,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
                     
                     position_info = await asyncio.to_thread(executor.process_signal, coin, signal_direction, current_price, trade_qty)
                     if position_info:
+                        position_info['candles_held'] = 0
                         open_position = position_info
                         if initial_entry_price is None:
                             initial_entry_price = position_info['entry_price']

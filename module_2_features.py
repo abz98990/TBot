@@ -71,10 +71,10 @@ class FeatureEngineer:
         """
         print("[ENGINEER] Calculating Forward Classification Labels (Target)...")
 
-        # Classification Target: 1 if next close > current close, else 0
-        df['target_class'] = (df['close'].shift(-1) > df['close']).astype(int)
+        # Classification Target: 1 if close price 4 candles later > current close, else 0
+        df['target_class'] = (df['close'].shift(-4) > df['close']).astype(int)
 
-        # Drop the final row because it has no "next" candle to predict
+        # Drop the final rows because they have no "future" candle to predict
         df.dropna(inplace=True)
         return df
 
