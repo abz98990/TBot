@@ -204,8 +204,9 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             print(f"=" * 60)
 
             # 4. Real-time Async Execution Router
-            # Trade only if confidence is high (> 55% or < 45%)
-            if predicted_prob > 0.55 or predicted_prob < 0.45:
+            if open_position is not None:
+                print(f"\n[ACTION] Already holding a position for {coin}. Skipping new signals.")
+            elif predicted_prob > 0.55 or predicted_prob < 0.45:
                 signal_direction = 'BUY' if predicted_prob > 0.55 else 'SELL'
                 print(f"\n[{coin}] HIGH CONFIDENCE SIGNAL DETECTED: {signal_direction}")
 

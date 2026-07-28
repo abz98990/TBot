@@ -1,1 +1,2 @@
 timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl,rsi,macd_hist,adx
+17:39:32,1920.42,0.1299,1,0,0.0000,48.34,-2.6285,39.22
