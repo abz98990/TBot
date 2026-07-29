@@ -114,7 +114,8 @@ def animate(i):
             # MACD Histogram as a bar chart on twinx
             # Positive values in green, negative in red
             colors = ['lime' if val > 0 else 'red' for val in df['macd_hist']]
-            ax4_macd.bar(x, df['macd_hist'], color=colors, alpha=0.5, label='MACD Histogram')
+            # Use a fixed small width so they don't expand into giant blocks when data is sparse
+            ax4_macd.bar(x, df['macd_hist'], color=colors, alpha=0.5, label='MACD Histogram', width=0.4)
             ax4_macd.set_ylabel("MACD Hist")
             
             # Combine legends safely if ax4 has lines

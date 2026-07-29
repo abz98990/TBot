@@ -92,9 +92,6 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
 
     log_file = os.path.join("logs", f"{coin_clean}_performance.csv")
     os.makedirs("logs", exist_ok=True)
-    if not os.path.exists(log_file):
-        with open(log_file, "w") as f:
-            f.write("timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl,rsi,macd_hist,adx\n")
 
     while True:
         try:
@@ -145,21 +142,23 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             for p in prediction_queue:
                 p['candles_elapsed'] += 1
                 
-            matured_predictions = [p for p in prediction_queue if p['candles_elapsed'] >= 4]
-            prediction_queue = [p for p in prediction_queue if p['candles_elapsed'] < 4]
+                # Check accuracy for predictions that have reached 4 candles and haven't been evaluated yet
+                if p['candles_elapsed'] >= 4 and p['actual_class'] == '':
+                    actual_class = 1 if current_price > p['price_then'] else 0
+                    predicted_class = 1 if p['prob'] > 0.5 else 0
+                    is_correct = int(predicted_class == actual_class)
+                    
+                    p['actual_class'] = actual_class
+                    p['is_correct'] = is_correct
+                    
+                    print(f"\n[QUANTITATIVE ANALYSIS] {coin}")
+                    print(f"Prediction from 4 candles ago: {p['prob']*100:.2f}% (UP)")
+                    print(f"Actual Outcome (4-candle)    : {'UP' if actual_class == 1 else 'DOWN'}")
+                    print(f"Prediction Correct?          : {'YES' if is_correct else 'NO'}")
             
-            for p in matured_predictions:
-                actual_class = 1 if current_price > p['price_then'] else 0
-                predicted_class = 1 if p['prob'] > 0.5 else 0
-                is_correct = int(predicted_class == actual_class)
-                
-                print(f"\n[QUANTITATIVE ANALYSIS] {coin}")
-                print(f"Prediction from 4 candles ago: {p['prob']*100:.2f}% (UP)")
-                print(f"Actual Outcome (4-candle)    : {'UP' if actual_class == 1 else 'DOWN'}")
-                print(f"Prediction Correct?          : {'YES' if is_correct else 'NO'}")
-                
-                with open(log_file, "a") as f:
-                    f.write(f"{cycle_time},{p['price_then']},{p['prob']:.4f},{actual_class},{is_correct},{cumulative_net_pnl:.4f},{p['rsi']:.2f},{p['macd_hist']:.4f},{p['adx']:.2f}\n")
+            # Keep only the last 100 predictions in memory to prevent leak
+            if len(prediction_queue) > 100:
+                prediction_queue.pop(0)
             # -----------------------------
 
             # 2. Synthesize & Normalize
@@ -186,13 +185,23 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
 
             # Enqueue the new prediction
             prediction_queue.append({
+                'cycle_time': cycle_time,
                 'prob': predicted_prob,
                 'price_then': current_price,
                 'rsi': df_features['RSI_14'].iloc[-1],
                 'macd_hist': df_features['MACDh_12_26_9'].iloc[-1],
                 'adx': df_features['ADX_14'].iloc[-1],
-                'candles_elapsed': 0
+                'candles_elapsed': 0,
+                'actual_class': '',
+                'is_correct': '',
+                'cumulative_net_pnl': cumulative_net_pnl
             })
+            
+            # Rewrite the entire CSV with the rolling history so dashboard updates instantly
+            with open(log_file, "w") as f:
+                f.write("timestamp,last_price,predicted_prob,actual_class,accuracy,cumulative_pnl,rsi,macd_hist,adx\n")
+                for p in prediction_queue:
+                    f.write(f"{p['cycle_time']},{p['price_then']},{p['prob']:.4f},{p['actual_class']},{p['is_correct']},{p['cumulative_net_pnl']:.4f},{p['rsi']:.2f},{p['macd_hist']:.4f},{p['adx']:.2f}\n")
 
             t_now_str = datetime.now().strftime("%H:%M:%S")
 
