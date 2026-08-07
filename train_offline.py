@@ -26,8 +26,10 @@ def run_offline_training():
         timeframe += 'm'
 
     # 3. Initialization
+    # 2. Initialize Core Modules
+    # Fetch real market data from Mainnet (unlimited history), public endpoints don't need keys
     print("\n[SYSTEM] Initializing Components...")
-    streamer = DataStreamer(api_key, api_secret, testnet=True)
+    streamer = DataStreamer("", "", testnet=False)
     engineer = FeatureEngineer(window_size=60)
     
     # We fetch a larger dataset for offline training.

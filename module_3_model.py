@@ -61,6 +61,10 @@ class ModelEngine:
         dataset = TensorDataset(X_tensor, y_tensor)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
+        if len(dataloader) == 0:
+            print("[MODEL] WARNING: Not enough data to form a single batch. Skipping training.")
+            return
+
         # 3. The Core Training Loop
         self.model.train()
         for epoch in range(epochs):
