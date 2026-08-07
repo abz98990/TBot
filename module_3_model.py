@@ -6,9 +6,10 @@ from torch.utils.data import DataLoader, TensorDataset
 
 
 class LSTMPredictor(nn.Module):
-    def __init__(self, input_size=3, hidden_size=64, num_layers=2, dropout=0.2):
+    def __init__(self, input_size=6, hidden_size=64, num_layers=2, dropout=0.2):
         """
         Defines the Neural Network Architecture.
+        input_size must match FeatureEngineer.feature_columns (currently 6).
         """
         super(LSTMPredictor, self).__init__()
 
@@ -37,7 +38,7 @@ class LSTMPredictor(nn.Module):
 
 
 class ModelEngine:
-    def __init__(self, input_size=3, learning_rate=0.001):
+    def __init__(self, input_size=6, learning_rate=0.001):
         """Initializes the training environment."""
         # Automatically use GPU if you have an Nvidia card, otherwise use CPU
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

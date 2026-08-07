@@ -79,19 +79,64 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
     
     coin_clean = coin.replace('/', '_')
     model_filepath = os.path.join("models", f"{coin_clean}_lstm_weights.pth")
-    scaler_filepath = os.path.join("models", f"{coin_clean}_scaler.pkl")
-    
+    # No scaler file needed — RollingNormalizer recomputes stats from live data each cycle.
+
     # Pre-loading the weights rather than training from scratch every hour!
     ai_engine.load_weights(model_filepath)
-    engineer.load_scaler(scaler_filepath)
 
+    import json
+    state_file = os.path.join("logs", f"{coin_clean}_state.json")
+    
     prediction_queue = []
     open_position = None
     initial_entry_price = None
     cumulative_net_pnl = 0.0
 
+    if os.path.exists(state_file):
+        try:
+            with open(state_file, "r") as f:
+                state = json.load(f)
+                open_position = state.get("open_position")
+                initial_entry_price = state.get("initial_entry_price")
+            if open_position:
+                print(f"[SYSTEM] Recovered active position from state file: {open_position['side']} at ${open_position['entry_price']}")
+        except Exception as e:
+            print(f"[WARNING] Could not load state file: {e}")
+            
+    def save_state():
+        with open(state_file, "w") as f:
+            json.dump({
+                "open_position": open_position,
+                "initial_entry_price": initial_entry_price
+            }, f)
+
     log_file = os.path.join("logs", f"{coin_clean}_performance.csv")
     os.makedirs("logs", exist_ok=True)
+    
+    if os.path.exists(log_file):
+        try:
+            import pandas as pd
+            df_existing = pd.read_csv(log_file)
+            for _, row in df_existing.tail(100).iterrows():
+                def parse_nan(val, default=''):
+                    return default if pd.isna(val) else val
+                prediction_queue.append({
+                    'cycle_time': row['timestamp'],
+                    'prob': row['predicted_prob'],
+                    'price_then': row['last_price'],
+                    'rsi': row['rsi'],
+                    'macd_hist': row['macd_hist'],
+                    'adx': row['adx'],
+                    'candles_elapsed': 4,
+                    'actual_class': parse_nan(row['actual_class']),
+                    'is_correct': parse_nan(row['accuracy']),
+                    'cumulative_net_pnl': parse_nan(row['cumulative_pnl'], 0.0)
+                })
+            if len(prediction_queue) > 0:
+                cumulative_net_pnl = prediction_queue[-1]['cumulative_net_pnl']
+            print(f"[SYSTEM] Loaded {len(prediction_queue)} historical predictions from {log_file}")
+        except Exception as e:
+            print(f"[WARNING] Could not load previous log: {e}")
 
     while True:
         try:
@@ -134,8 +179,10 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
                         print(f"[TRACKING] Asset deviation since FIRST trade: {asset_deviation:+.2f}%")
                     
                     open_position = None
+                    save_state()
                 else:
                     print(f"\n[SYSTEM] Holding position for {coin}... ({open_position['candles_held']}/4 candles)")
+                    save_state()
             # ------------------------------------------------
 
             # --- Quantitative Analysis ---
@@ -163,10 +210,14 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
 
             # 2. Synthesize & Normalize
             df_features = engineer.apply_technical_indicators(df)
-            
+
+            # --- Rolling normalizer: calibration path ---
+            # normalize_data() runs fit_transform on the full recent history,
+            # anchoring mean/std to the current price regime. This also caches
+            # the final-row stats that the inference path will reuse below.
             df_train = df_features.copy()
             df_train = engineer.engineer_target_variable(df_train)
-            df_train = engineer.normalize_data(df_train, is_training=False)
+            df_train = engineer.normalize_data(df_train)   # updates cached rolling stats
             X_train, y_train = engineer.create_3d_tensor(df_train)
 
             # Continuous Calibration (Online Learning)
@@ -174,10 +225,12 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
             await asyncio.to_thread(ai_engine.train, X_train, y_train, epochs=3, batch_size=32, verbose=False)
             await asyncio.to_thread(ai_engine.save_model, model_filepath)
 
-            # 3. Live Inference
-            df_infer = df_features.copy()
-            df_infer[engineer.feature_columns] = engineer.scaler.transform(df_infer[engineer.feature_columns])
-            
+            # --- Rolling normalizer: inference path ---
+            # Re-normalize df_features using the same fresh stats computed just
+            # above. Do NOT call engineer.scaler.transform() here — that was the
+            # old stale-stats bug. normalize_data() always uses the current window.
+            df_infer = engineer.normalize_data(df_features.copy())
+
             feature_data = df_infer[engineer.feature_columns].values
             latest_window = feature_data[-engineer.window_size:]
             
@@ -241,6 +294,7 @@ async def track_coin_loop(coin, timeframe, sleep_seconds, streamer, executor, au
                         open_position = position_info
                         if initial_entry_price is None:
                             initial_entry_price = position_info['entry_price']
+                        save_state()
                 else:
                     print(f"[SYSTEM] Authorization denied or timed out for {coin}. Trade aborted.")
             else:
@@ -272,8 +326,18 @@ async def main_async():
         timeframe += 'm'
 
     print("\n[SYSTEM] Initializing Core Architecture...")
-    streamer = DataStreamer(api_key, api_secret, testnet=True)
-    executor = ExecutionManager(streamer.exchange)
+    # Fetch real market data from Mainnet (unlimited history), public endpoints don't need keys
+    streamer = DataStreamer("", "", testnet=False)
+    
+    # Execute fake trades on Testnet using user's keys
+    import ccxt
+    testnet_exchange = ccxt.binance({
+        'apiKey': api_key,
+        'secret': api_secret,
+        'enableRateLimit': True,
+    })
+    testnet_exchange.set_sandbox_mode(True)
+    executor = ExecutionManager(testnet_exchange)
 
     tf_val = int(timeframe[:-1])
     tf_unit = timeframe[-1].lower()

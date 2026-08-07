@@ -48,25 +48,26 @@ def run_offline_training():
         # Feature Engineering Pipeline
         df_features = engineer.apply_technical_indicators(df)
         df_targets = engineer.engineer_target_variable(df_features)
-        
-        # We explicitly set is_training=True so it FITS the StandardScaler
-        df_normalized = engineer.normalize_data(df_targets, is_training=True)
+
+        # Rolling normalizer: no is_training flag needed.
+        # fit_transform runs on the full training history here, giving the
+        # LSTM inputs that are always relative to recent market conditions.
+        # There is no scaler file to save — stats are recomputed fresh on
+        # every live cycle from current market data.
+        df_normalized = engineer.normalize_data(df_targets)
         X, y = engineer.create_3d_tensor(df_normalized)
 
         # Build Model
         ai_engine = ModelEngine(input_size=6)
-        
+
         # Train aggressively
         ai_engine.train(X, y, epochs=280, batch_size=128)
 
-        # Define filepaths dynamically based on coin name (replaces / with _)
+        # Save only the model weights — no scaler pkl needed anymore
         coin_clean = coin.replace('/', '_')
         model_filepath = os.path.join("models", f"{coin_clean}_lstm_weights.pth")
-        scaler_filepath = os.path.join("models", f"{coin_clean}_scaler.pkl")
-        
-        # Securely save the weights and scaler for live trading
         ai_engine.save_model(filepath=model_filepath)
-        engineer.save_scaler(filepath=scaler_filepath)
+        print(f"[SYSTEM] Note: No scaler file saved — rolling normalizer recomputes stats live.")
 
 if __name__ == "__main__":
     try:
